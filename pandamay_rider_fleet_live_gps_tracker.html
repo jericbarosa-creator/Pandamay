@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PANDAMAY - Live Rider Tracking & Fleet Dispatch</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Leaflet CSS for Interactive Live Map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <!-- Font Awesome for crisp Fleet & Navigation Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f1f5f9;
+        }
+        /* Ensure map container has proper stacking context */
+        #fleetMap {
+            z-index: 10;
+        }
+        /* Custom pulsing marker for active riders */
+        .rider-pin-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .rider-badge {
+            background: #0f172a;
+            color: #ffffff;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 9999px;
+            white-space: nowrap;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+            border: 1.5px solid #f97316;
+            margin-bottom: 2px;
+        }
+        .rider-dot {
+            width: 28px;
+            height: 28px;
+            background: #ea580c;
+            border: 3px solid #ffffff;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+            box-shadow: 0 0 0 4px rgba(234, 88, 12, 0.35);
+        }
+        .rider-dot.selected {
+            background: #2563eb;
+            box-shadow: 0 0 0 6px rgba(37, 99, 235, 0.45);
+        }
+    </style>
+</head>
+<body class="text-slate-800 antialiased min-h-screen flex flex-col">
+
+    <!-- Top Brand Header -->
+    <header class="bg-slate-900 text-white shadow-lg sticky top-0 z-30 border-b border-slate-800">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-wrap items-center justify-between gap-3">
+            <!-- Brand Identity -->
+            <div class="flex items-center gap-3">
+                <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-orange-500 to-amber-600 flex items-center justify-center shadow-md shadow-orange-500/20">
+                    <i class="fa-solid fa-motorcycle text-white text-xl"></i>
+                </div>
+                <div>
+                    <div class="flex items-center gap-2">
+                        <h1 class="text-2xl font-extrabold tracking-tight text-white">PANDAMAY</h1>
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                            LIVE GPS
+                        </span>
+                    </div>
+                    <p class="text-xs text-slate-400">Real-Time Rider Fleet Locator &amp; Google Maps Dispatch</p>
+                </div>
+            </div>
+
+            <!-- Global Fleet Actions -->
+            <div class="flex flex-wrap items-center gap-2.5">
+                <button id="toggleSimBtn" onclick="toggleSimulation()" class="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition flex items-center gap-2 cursor-pointer">
+                    <i id="simIcon" class="fa-solid fa-pause text-amber-400"></i>
+                    <span id="simText">Live Motion: ON</span>
+                </button>
+                <button onclick="locateAllRiders()" class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-orange-600 hover:bg-orange-500 active:scale-95 text-white shadow-md shadow-orange-600/25 transition flex items-center gap-2 cursor-pointer">
+                    <i class="fa-solid fa-crosshairs"></i>
+                    <span>LOCATE ALL RIDERS (<span id="activeCountBadge">0</span>)</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Custom Toast Notification Banner (Replaces alert) -->
+    <div id="toastBanner" class="fixed bottom-5 right-5 z-50 hidden max-w-sm bg-slate-900 text-white px-4 py-3 rounded-xl shadow-2xl border border-slate-700 flex items-center gap-3 transition-all">
+        <i id="toastIcon" class="fa-solid fa-circle-check text-emerald-400 text-lg"></i>
+        <p id="toastMessage" class="text-sm font-medium"></p>
+    </div>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 space-y-5">
+
+        <!-- FIRST ROW: Required Explicit Rider Bar (DRIVER NAME: | VEHICLE PLATE: | RIDERS ID: | NAVIGATE) -->
+        <section aria-label="Active Rider Quick Bar & Registration" class="bg-white rounded-2xl shadow-md border border-slate-200 p-4 sm:p-5">
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-xs font-bold uppercase tracking-wider text-orange-600 flex items-center gap-1.5">
+                    <i class="fa-solid fa-id-card-clip"></i> Active Rider Dispatch &amp; Quick Tracker Row
+                </span>
+                <span class="text-xs text-slate-500 hidden sm:inline">Select any rider below or enter details to register &amp; navigate</span>
+            </div>
+
+            <!-- Primary First Row Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+                <!-- DRIVER NAME: -->
+                <div class="md:col-span-4">
+                    <label for="inputDriverName" class="block text-xs font-extrabold tracking-wide text-slate-800 uppercase mb-1.5">
+                        DRIVER NAME:
+                    </label>
+                    <div class="relative">
+                        <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400">
+                            <i class="fa-solid fa-user-helmet-safety"></i>
+                        </span>
+                        <input type="text" id="inputDriverName" placeholder="e.g. Juan Dela Cruz"
+                            class="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 transition">
+                    </div>
+                </div>
+
+                <!-- VEHICLE PLATE: -->
+                <div class="md:col-span-3">
+                    <label for="inputVehiclePlate" class="block text-xs font-extrabold tracking-wide text-slate-800 uppercase mb-1.5">
+                        VEHICLE PLATE:
+                    </label>
+                    <div class="relative">
+                        <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400">
+                            <i class="fa-solid fa-hashtag"></i>
+                        </span>
+                        <input type="text" id="inputVehiclePlate" placeholder="e.g. LAH-4821"
+                            class="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-bold uppercase text-slate-900 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 transition">
+                    </div>
+                </div>
+
+                <!-- RIDERS ID: -->
+                <div class="md:col-span-2">
+                    <label for="inputRiderId" class="block text-xs font-extrabold tracking-wide text-slate-800 uppercase mb-1.5">
+                        RIDERS ID:
+                    </label>
+                    <div class="relative">
+                        <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400">
+                            <i class="fa-solid fa-id-badge"></i>
+                        </span>
+                        <input type="text" id="inputRiderId" placeholder="e.g. PDM-101"
+                            class="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-bold uppercase text-slate-900 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500 transition">
+                    </div>
+                </div>
+
+                <!-- Functional NAVIGATE Button & Add Rider Action -->
+                <div class="md:col-span-3 flex gap-2">
+                    <button id="primaryNavigateBtn" onclick="navigateTopBarRider()"
+                        class="flex-1 py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-extrabold text-sm tracking-wide shadow-md shadow-blue-600/25 transition flex items-center justify-center gap-2 cursor-pointer"
+                        title="Open rider location directly in Google Maps">
+                        <i class="fa-solid fa-location-arrow"></i>
+                        <span>NAVIGATE</span>
+                    </button>
+                    <button onclick="addRiderFromTopBar()"
+                        class="py-2.5 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-sm shadow-md shadow-emerald-600/20 transition flex items-center justify-center gap-1.5 cursor-pointer"
+                        title="Add Rider to Live Fleet Map">
+                        <i class="fa-solid fa-plus"></i>
+                        <span class="hidden lg:inline">ADD</span>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECOND SECTION: Interactive Live Map + All Active Riders Directory -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+
+            <!-- Left/Top: Live Fleet Map ("Locate All Riders Using the App") -->
+            <div class="lg:col-span-7 bg-white rounded-2xl shadow-md border border-slate-200 overflow-hidden flex flex-col">
+                <div class="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-map-location-dot text-orange-600 text-lg"></i>
+                        <h2 class="font-bold text-slate-800 text-sm sm:text-base">Live Fleet Map &mdash; All Active App Riders</h2>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button onclick="shareMyCurrentGpsAsRider()" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-800 transition flex items-center gap-1.5 cursor-pointer">
+                            <i class="fa-solid fa-satellite-dish text-orange-600"></i>
+                            <span>Pin My Device GPS</span>
+                        </button>
+                        <button onclick="locateAllRiders()" class="text-xs font-bold px-3 py-1.5 rounded-lg bg-orange-100 hover:bg-orange-200 text-orange-800 transition flex items-center gap-1.5 cursor-pointer">
+                            <i class="fa-solid fa-expand"></i>
+                            <span>Fit All</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Map Viewport -->
+                <div class="relative w-full h-[360px] sm:h-[450px]">
+                    <div id="fleetMap" class="w-full h-full"></div>
+                    <!-- Map Legend Overlay -->
+                    <div class="absolute bottom-3 left-3 z-20 bg-white/95 backdrop-blur-sm px-3 py-2 rounded-xl shadow-md border border-slate-200 text-xs space-y-1">
+                        <div class="font-bold text-slate-700">Tracking Legend</div>
+                        <div class="flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full bg-orange-600 inline-block"></span>
+                            <span class="text-slate-600">Active App Rider</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="w-3 h-3 rounded-full bg-blue-600 inline-block"></span>
+                            <span class="text-slate-600">Selected Rider</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right/Bottom: Complete Rider List with Direct Google Maps NAVIGATE Buttons -->
+            <div class="lg:col-span-5 bg-white rounded-2xl shadow-md border border-slate-200 flex flex-col overflow-hidden">
+                <div class="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-list-check text-blue-600"></i>
+                        <h2 class="font-bold text-slate-800 text-sm sm:text-base">Connected Riders Roster</h2>
+                    </div>
+                    <!-- Quick Search Filter -->
+                    <div class="relative w-40 sm:w-48">
+                        <input type="text" id="searchRiderInput" oninput="renderRiderList()" placeholder="Filter name/plate/ID..."
+                            class="w-full pl-3 pr-7 py-1.5 bg-white border border-slate-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <i class="fa-solid fa-magnifying-glass text-slate-400 text-xs absolute right-2.5 top-2"></i>
+                    </div>
+                </div>
+
+                <!-- Scrollable Rider Cards Container -->
+                <div id="ridersListContainer" class="p-3 space-y-3 overflow-y-auto max-h-[450px] flex-1 bg-slate-50/50">
+                    <!-- Populated dynamically via JavaScript -->
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-white border-t border-slate-200 py-3 px-4 text-center text-xs text-slate-500">
+        <strong>PANDAMAY</strong> Fleet GPS &amp; Google Maps Rider Navigation System &bull; All active riders synchronized in real time.
+    </footer>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <script>
+        /**
+         * PANDAMAY Fleet & Rider Tracking Application
+         * Features:
+         * 1. Top row with DRIVER NAME:, VEHICLE PLATE:, RIDERS ID:, and functional NAVIGATE button.
+         * 2. Direct redirection to Google Maps using live GPS coordinates.
+         * 3. Multi-rider real-time tracking map ("Locate All Riders").
+         */
+
+        // Initial active riders using the PANDAMAY app (centered around Sulop / Davao del Sur region)
+        let riders = [
+            {
+                id: "PDM-101",
+                driverName: "Juan Dela Cruz",
+                vehiclePlate: "LAH-4821",
+                lat: 6.5968,
+                lng: 125.3442,
+                speed: "34 km/h",
+                status: "En Route",
+                lastUpdated: "Just now"
+            },
+            {
+                id: "PDM-102",
+                driverName: "Mark Anthony Reyes",
+                vehiclePlate: "MVD-9034",
+                lat: 6.6055,
+                lng: 125.3510,
+                speed: "28 km/h",
+                status: "Delivering",
+                lastUpdated: "Just now"
+            },
+            {
+                id: "PDM-103",
+                driverName: "Carlo Mendoza",
+                vehiclePlate: "KBC-7712",
+                lat: 6.5882,
+                lng: 125.3385,
+                speed: "41 km/h",
+                status: "Active",
+                lastUpdated: "Just now"
+            },
+            {
+                id: "PDM-104",
+                driverName: "Ramon Bautista",
+                vehiclePlate: "DVO-5519",
+                lat: 6.6120,
+                lng: 125.3390,
+                speed: "19 km/h",
+                status: "Pickup",
+                lastUpdated: "Just now"
+            }
+        ];
+
+        let selectedRiderId = riders[0].id;
+        let map = null;
+        let markersMap = {};
+        let simulationActive = true;
+        let simulationInterval = null;
+
+        // Initialize application once window loads
+        window.onload = function () {
+            try {
+                initMap();
+                selectRider(riders[0].id, false);
+                renderRiderList();
+                updateMapMarkers(true);
+                startLiveSimulation();
+            } catch (err) {
+                console.error("Initialization error:", err);
+                showToast("Map failed to initialize. Check your internet connection.", true);
+            }
+        };
+
+        /**
+         * Initializes the Leaflet map with OpenStreetMap tiles
+         */
+        function initMap() {
+            map = L.map('fleetMap', {
+                zoomControl: true
+            }).setView([6.5968, 125.3442], 14);
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap contributors | PANDAMAY GPS'
+            }).addTo(map);
+        }
+
+        /**
+         * Creates or updates all rider markers on the map so all riders can be located simultaneously
+         */
+        function updateMapMarkers(fitBoundsAfter = false) {
+            if (!map) return;
+
+            // Update active badge counter
+            document.getElementById('activeCountBadge').textContent = riders.length;
+
+            // Track current IDs to clean up removed markers
+            const activeIds = new Set(riders.map(r => r.id));
+            Object.keys(markersMap).forEach(existingId => {
+                if (!activeIds.has(existingId)) {
+                    map.removeLayer(markersMap[existingId]);
+                    delete markersMap[existingId];
+                }
+            });
+
+            riders.forEach(rider => {
+                const isSelected = rider.id === selectedRiderId;
+                const customIcon = L.divIcon({
+                    className: 'custom-rider-marker',
+                    html: `
+                        <div class="rider-pin-wrapper">
+                            <div class="rider-badge">${escapeHtml(rider.id)} &bull; ${escapeHtml(rider.vehiclePlate)}</div>
+                            <div class="rider-dot ${isSelected ? 'selected' : ''}">
+                                <i class="fa-solid fa-motorcycle"></i>
+                            </div>
+                        </div>
+                    `,
+                    iconSize: [110, 48],
+                    iconAnchor: [55, 42]
+                });
+
+                const popupHtml = `
+                    <div style="min-width: 190px; font-family: Inter, sans-serif;">
+                        <div style="font-size: 11px; font-weight: 800; color: #ea580c; text-transform: uppercase;">RIDERS ID: ${escapeHtml(rider.id)}</div>
+                        <div style="font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 2px;">${escapeHtml(rider.driverName)}</div>
+                        <div style="font-size: 12px; color: #475569; margin-bottom: 8px;">Plate: <strong>${escapeHtml(rider.vehiclePlate)}</strong> &bull; ${escapeHtml(rider.speed)}</div>
+                        <button onclick="openGoogleMaps(${rider.lat}, ${rider.lng}, '${escapeJs(rider.driverName)}')"
+                            style="width: 100%; background: #2563eb; color: white; border: none; padding: 7px 10px; border-radius: 8px; font-weight: 700; font-size: 12px; cursor: pointer;">
+                            NAVIGATE IN GOOGLE MAPS
+                        </button>
+                    </div>
+                `;
+
+                if (markersMap[rider.id]) {
+                    markersMap[rider.id].setLatLng([rider.lat, rider.lng]);
+                    markersMap[rider.id].setIcon(customIcon);
+                    markersMap[rider.id].setPopupContent(popupHtml);
+                } else {
+                    const marker = L.marker([rider.lat, rider.lng], { icon: customIcon })
+                        .addTo(map)
+                        .bindPopup(popupHtml);
+
+                    marker.on('click', () => {
+                        selectRider(rider.id, false);
+                    });
+
+                    markersMap[rider.id] = marker;
+                }
+            });
+
+            if (fitBoundsAfter) {
+                locateAllRiders(false);
+            }
+        }
+
+        /**
+         * Zooms and pans the map to show ALL riders using the app at once
+         */
+        function locateAllRiders(notify = true) {
+            if (!map || riders.length === 0) return;
+
+            const bounds = L.latLngBounds(riders.map(r => [r.lat, r.lng]));
+            map.fitBounds(bounds, { padding: [55, 55], maxZoom: 16 });
+
+            if (notify) {
+                showToast(`Located all ${riders.length} active PANDAMAY riders on the map.`);
+            }
+        }
+
+        /**
+         * Selects a rider and populates the First Row (DRIVER NAME:, VEHICLE PLATE:, RIDERS ID:)
+         */
+        function selectRider(riderId, panToRider = true) {
+            const rider = riders.find(r => r.id === riderId);
+            if (!rider) return;
+
+            selectedRiderId = rider.id;
+
+            // Populate top row inputs
+            document.getElementById('inputDriverName').value = rider.driverName;
+            document.getElementById('inputVehiclePlate').value = rider.vehiclePlate;
+            document.getElementById('inputRiderId').value = rider.id;
+
+            updateMapMarkers(false);
+            renderRiderList();
+
+            if (panToRider && map) {
+                map.setView([rider.lat, rider.lng], 16, { animate: true });
+                if (markersMap[rider.id]) {
+                    markersMap[rider.id].openPopup();
+                }
+            }
+        }
+
+        /**
+         * Handles the top-row NAVIGATE button click:
+         * Finds the matching rider (or uses selected rider's GPS) and redirects to Google Maps
+         */
+        function navigateTopBarRider() {
+            const driverNameVal = document.getElementById('inputDriverName').value.trim();
+            const plateVal = document.getElementById('inputVehiclePlate').value.trim().toUpperCase();
+            const riderIdVal = document.getElementById('inputRiderId').value.trim().toUpperCase();
+
+            // Match by Rider ID, Plate, or Name; fallback to currently selected rider
+            let targetRider = riders.find(r =>
+                (riderIdVal && r.id.toUpperCase() === riderIdVal) ||
+                (plateVal && r.vehiclePlate.toUpperCase() === plateVal) ||
+                (driverNameVal && r.driverName.toLowerCase() === driverNameVal.toLowerCase())
+            );
+
+            if (!targetRider && selectedRiderId) {
+                targetRider = riders.find(r => r.id === selectedRiderId);
+            }
+
+            if (!targetRider && riders.length > 0) {
+                targetRider = riders[0];
+            }
+
+            if (targetRider) {
+                openGoogleMaps(targetRider.lat, targetRider.lng, targetRider.driverName);
+            } else {
+                showToast("No active rider coordinates available to navigate.", true);
+            }
+        }
+
+        /**
+         * Opens Google Maps in a new tab directed to the rider's exact GPS coordinates
+         */
+        function openGoogleMaps(lat, lng, driverName) {
+            const googleMapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(lat + ',' + lng)}&travelmode=driving`;
+            showToast(`Redirecting to Google Maps for ${driverName} (${lat.toFixed(4)}, ${lng.toFixed(4)})...`);
+            window.open(googleMapsUrl, '_blank', 'noopener,noreferrer');
+        }
+
+        /**
+         * Adds a new rider from the First Row inputs into the live tracking fleet
+         */
+        function addRiderFromTopBar() {
+            const driverName = document.getElementById('inputDriverName').value.trim();
+            const vehiclePlate = document.getElementById('inputVehiclePlate').value.trim().toUpperCase();
+            const riderId = document.getElementById('inputRiderId').value.trim().toUpperCase();
+
+            if (!driverName || !vehiclePlate || !riderId) {
+                showToast("Please fill in DRIVER NAME, VEHICLE PLATE, and RIDERS ID.", true);
+                return;
+            }
+
+            // Check if Rider ID already exists; if so, update it
+            const existingIndex = riders.findIndex(r => r.id.toUpperCase() === riderId);
+            if (existingIndex !== -1) {
+                riders[existingIndex].driverName = driverName;
+                riders[existingIndex].vehiclePlate = vehiclePlate;
+                riders[existingIndex].lastUpdated = "Updated now";
+                selectRider(riders[existingIndex].id, true);
+                showToast(`Updated rider ${riderId} (${driverName}).`);
+                return;
+            }
+
+            // Place new rider near the map center with slight offset so pins don't overlap
+            const center = map ? map.getCenter() : { lat: 6.5968, lng: 125.3442 };
+            const newRider = {
+                id: riderId,
+                driverName: driverName,
+                vehiclePlate: vehiclePlate,
+                lat: center.lat + (Math.random() - 0.5) * 0.012,
+                lng: center.lng + (Math.random() - 0.5) * 0.012,
+                speed: "25 km/h",
+                status: "Online",
+                lastUpdated: "Just now"
+            };
+
+            riders.unshift(newRider);
+            selectRider(newRider.id, true);
+            showToast(`Added ${driverName} (${riderId}) to PANDAMAY live tracking!`);
+        }
+
+        /**
+         * Uses browser Geolocation API to pin the user's actual device location as a rider
+         */
+        function shareMyCurrentGpsAsRider() {
+            if (!navigator.geolocation) {
+                showToast("Geolocation is not supported by your browser.", true);
+                return;
+            }
+
+            showToast("Requesting your live device GPS location...");
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const { latitude, longitude } = position.coords;
+                    const driverName = document.getElementById('inputDriverName').value.trim() || "Live App Rider";
+                    const vehiclePlate = document.getElementById('inputVehiclePlate').value.trim().toUpperCase() || "GPS-LIVE";
+                    const riderId = document.getElementById('inputRiderId').value.trim().toUpperCase() || `PDM-${Math.floor(105 + Math.random() * 890)}`;
+
+                    const existing = riders.find(r => r.id === riderId);
+                    if (existing) {
+                        existing.lat = latitude;
+                        existing.lng = longitude;
+                        existing.driverName = driverName;
+                        existing.vehiclePlate = vehiclePlate;
+                        existing.status = "Live GPS";
+                    } else {
+                        riders.unshift({
+                            id: riderId,
+                            driverName: driverName,
+                            vehiclePlate: vehiclePlate,
+                            lat: latitude,
+                            lng: longitude,
+                            speed: "Live GPS",
+                            status: "Live GPS",
+                            lastUpdated: "Just now"
+                        });
+                    }
+
+                    selectRider(riderId, true);
+                    showToast(`Live GPS synced at ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`);
+                },
+                () => {
+                    showToast("Location permission denied or unavailable.", true);
+                },
+                { enableHighAccuracy: true, timeout: 8000 }
+            );
+        }
+
+        /**
+         * Renders the interactive list of all riders with explicit labels and NAVIGATE buttons
+         */
+        function renderRiderList() {
+            const container = document.getElementById('ridersListContainer');
+            const filterQuery = document.getElementById('searchRiderInput').value.trim().toLowerCase();
+
+            const filteredRiders = riders.filter(r =>
+                r.driverName.toLowerCase().includes(filterQuery) ||
+                r.vehiclePlate.toLowerCase().includes(filterQuery) ||
+                r.id.toLowerCase().includes(filterQuery)
+            );
+
+            if (filteredRiders.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-8 text-slate-400 text-sm">
+                        <i class="fa-solid fa-route text-2xl mb-2 block"></i>
+                        No matching riders found.
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = filteredRiders.map(rider => {
+                const isSelected = rider.id === selectedRiderId;
+                return `
+                    <div onclick="selectRider('${escapeJs(rider.id)}', true)"
+                        class="p-3.5 rounded-xl border transition cursor-pointer ${isSelected ? 'bg-blue-50/70 border-blue-500 shadow-sm' : 'bg-white border-slate-200 hover:border-orange-400'}">
+                        
+                        <div class="flex items-start justify-between gap-2 mb-2">
+                            <div>
+                                <div class="flex items-center gap-2">
+                                    <span class="px-2 py-0.5 rounded-md text-xs font-extrabold bg-slate-900 text-white">
+                                        RIDERS ID: ${escapeHtml(rider.id)}
+                                    </span>
+                                    <span class="px-2 py-0.5 rounded-md text-xs font-bold bg-orange-100 text-orange-800">
+                                        PLATE: ${escapeHtml(rider.vehiclePlate)}
+                                    </span>
+                                </div>
+                                <h3 class="font-bold text-slate-900 text-sm mt-1.5">
+                                    <span class="text-slate-500 font-semibold text-xs">DRIVER NAME:</span> ${escapeHtml(rider.driverName)}
+                                </h3>
+                            </div>
+
+                            <span class="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full shrink-0">
+                                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                                ${escapeHtml(rider.status)}
+                            </span>
+                        </div>
+
+                        <div class="flex items-center justify-between pt-2 border-t border-slate-100 gap-2">
+                            <div class="text-[11px] text-slate-500 font-mono">
+                                <i class="fa-solid fa-location-dot text-orange-500 mr-1"></i>${rider.lat.toFixed(4)}, ${rider.lng.toFixed(4)}
+                            </div>
+
+                            <!-- Functional NAVIGATE Button redirecting directly to Google Maps -->
+                            <button onclick="event.stopPropagation(); openGoogleMaps(${rider.lat}, ${rider.lng}, '${escapeJs(rider.driverName)}')"
+                                class="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-extrabold text-xs tracking-wide shadow-sm transition flex items-center gap-1.5 cursor-pointer">
+                                <i class="fa-solid fa-diamond-turn-right"></i>
+                                <span>NAVIGATE</span>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        /**
+         * Simulates subtle real-time GPS movement for active fleet riders
+         */
+        function startLiveSimulation() {
+            if (simulationInterval) clearInterval(simulationInterval);
+            simulationInterval = setInterval(() => {
+                if (!simulationActive) return;
+
+                riders.forEach(rider => {
+                    // Slight realistic GPS drift
+                    rider.lat += (Math.random() - 0.5) * 0.00045;
+                    rider.lng += (Math.random() - 0.5) * 0.00045;
+                });
+
+                updateMapMarkers(false);
+                renderRiderList();
+            }, 3000);
+        }
+
+        /**
+         * Toggles live simulated GPS movement on/off
+         */
+        function toggleSimulation() {
+            simulationActive = !simulationActive;
+            const icon = document.getElementById('simIcon');
+            const text = document.getElementById('simText');
+
+            if (simulationActive) {
+                icon.className = 'fa-solid fa-pause text-amber-400';
+                text.textContent = 'Live Motion: ON';
+                showToast("Real-time rider movement tracking resumed.");
+            } else {
+                icon.className = 'fa-solid fa-play text-emerald-400';
+                text.textContent = 'Live Motion: PAUSED';
+                showToast("Real-time rider movement paused.");
+            }
+        }
+
+        /**
+         * Non-blocking toast banner for user feedback
+         */
+        let toastTimeout = null;
+        function showToast(message, isError = false) {
+            const banner = document.getElementById('toastBanner');
+            const msgEl = document.getElementById('toastMessage');
+            const iconEl = document.getElementById('toastIcon');
+
+            msgEl.textContent = message;
+            iconEl.className = isError
+                ? 'fa-solid fa-circle-exclamation text-rose-400 text-lg'
+                : 'fa-solid fa-circle-check text-emerald-400 text-lg';
+
+            banner.classList.remove('hidden');
+            if (toastTimeout) clearTimeout(toastTimeout);
+            toastTimeout = setTimeout(() => {
+                banner.classList.add('hidden');
+            }, 3500);
+        }
+
+        /**
+         * Security helpers for safe HTML/JS rendering
+         */
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        function escapeJs(str) {
+            return String(str).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+        }
+    </script>
+</body>
+</html>
